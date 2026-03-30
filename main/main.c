@@ -73,7 +73,6 @@ static void i2c_task(void *arg){
         }else {
             printf("SPS30 not ready yet\n");
         }
-        vTaskDelay(pdMS_TO_TICKS(1000)); // Wait for 1 second before next reading
 
         // ---- MS5611 ----
         //Read D1 conversion result
@@ -84,6 +83,5 @@ static void i2c_task(void *arg){
         telemetry->MS5611_temperature = ms5611_calculateTemperature();
         telemetry->MS5611_pressure = ms5611_calculatePressure();
         printf("MS5611 Temperature: %.2f, Pressure: %.2f\n", telemetry->MS5611_temperature/100.0, telemetry->MS5611_pressure/100.0);
-        vTaskDelay(pdMS_TO_TICKS(1000)); // Wait for 1 second before next reading
     }
 }
