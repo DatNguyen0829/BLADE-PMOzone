@@ -3,5 +3,6 @@ idf_component_register(SRCS "main.c"
                     REQUIRES i2c_handle
                     REQUIRES sps30
                     REQUIRES ms5611
+                    REQUIRES ze27o3
                     REQUIRES driver
                     )
