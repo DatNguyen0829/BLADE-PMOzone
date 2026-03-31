@@ -84,13 +84,17 @@ esp_err_t ze27o3_readActiveUpload(uint16_t *o3_ppb)
                 continue;
             }
 
-            if (frame[1] != 0x86) {
+            if (frame[1] != 0x2A) {
                 ESP_LOGE("ZE27O3", "Unexpected command byte: 0x%02X", frame[1]);
                 frame_pos = 0;
                 continue;
             }
 
-            uint16_t ppb = ((uint16_t)frame[2] << 8) | frame[3];
+            ESP_LOGI("ZE27O3", "Received valid frame: %02X %02X %02X %02X %02X %02X %02X %02X %02X",
+                     frame[0], frame[1], frame[2], frame[3], frame[4],
+                     frame[5], frame[6], frame[7], frame[8]);
+
+            uint16_t ppb = ((uint16_t)frame[4] << 8) | frame[5];
             *o3_ppb = ppb;
 
             ESP_LOGI("ZE27O3", "O3 Concentration: %u ppb", ppb);
@@ -98,5 +102,5 @@ esp_err_t ze27o3_readActiveUpload(uint16_t *o3_ppb)
         }
     }
 
-    return ESP_FAIL;
+    return ESP_ERR_NOT_FOUND;
 }
