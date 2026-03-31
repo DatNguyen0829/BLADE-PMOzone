@@ -5,6 +5,7 @@
 #include "i2c_handle.h"
 #include "sps30.h"
 #include "ms5611.h"
+#include "ze27o3.h"
 
 /* --- I2C bus variables --- */
 i2c_master_bus_handle_t i2c_bus_handle;
