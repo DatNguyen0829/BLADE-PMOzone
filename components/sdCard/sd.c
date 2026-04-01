@@ -5,13 +5,13 @@ static const char *TAG = "sd_spi_write";
 esp_err_t sd_init(void){
     esp_err_t ret;
 
-    // Pull CS high to avoid spurious signals during initialization
+    // Pull CS high before SD init
     gpio_reset_pin(SD_CS);
     gpio_set_direction(SD_CS, GPIO_MODE_OUTPUT);
     gpio_set_level(SD_CS, 1);
     vTaskDelay(pdMS_TO_TICKS(10)); // Short delay to ensure CS is stable before SPI init
     
-    // 1) Configure SPI bus
+    // Configure SPI bus
     spi_bus_config_t bus_cfg = {
         .mosi_io_num = SD_MOSI,
         .miso_io_num = SD_MISO,
@@ -21,8 +21,7 @@ esp_err_t sd_init(void){
         .max_transfer_sz = 4000,
     };
 
-    // Choose a host. On ESP32, HSPI_HOST (SPI2) or VSPI_HOST (SPI3) depending on IDF.
-    // Many examples use SPI2_HOST / SPI3_HOST in newer IDF.
+   // Use SPI2_HOST for SD card
     spi_host_device_t host = SPI2_HOST;
 
     // Initialize the SPI bus
