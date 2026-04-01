@@ -62,14 +62,14 @@ esp_err_t sd_init(void){
     return ESP_OK;
 }
 
-esp_err_t sd_write(void){
+esp_err_t sd_write(const char *data){
     const char *path = MOUNT_POINT "/hello.txt";
     FILE *f = fopen(path, "a");   // "w" overwrite, "a" append
     if (!f) {
         ESP_LOGE(TAG, "Failed to open file for writing");
         return ESP_FAIL;
     } else {
-        fprintf(f, "Hello from ESP-IDF over SPI!\n");
+        fprintf(f, "%s", data);
         fclose(f);
         ESP_LOGI(TAG, "Wrote to %s", path);
     }

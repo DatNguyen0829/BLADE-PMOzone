@@ -22,10 +22,12 @@ typedef struct {
 } Telemetry;
 static Telemetry telemetry = {0};
 
+static QueueHandle_t i2c_queue;
 
 // Prototype for the task function
 static void i2c_task(void *arg);
 static void ze27o3_task(void *arg);
+static void telemetry_task(void *arg);
 
 void app_main(void)
 {
@@ -52,14 +54,27 @@ void app_main(void)
     vTaskDelay(pdMS_TO_TICKS(10));           // Wait for reset to complete
     ms5611_read_prom(ms5611_dev_handle);     //Read device Prom values
 
-    // Initialize ZE27O3 UART
-    ESP_ERROR_CHECK(ze27_uart_init());
+    // // Initialize ZE27O3 UART
+    // ESP_ERROR_CHECK(ze27_uart_init());
+
+    // // Create a task to read ZE27O3 data periodically
+    // xTaskCreate(ze27o3_task, "ze27o3_task", 2048, &telemetry, 5, NULL);
+
+    // Initialize SD card
+    esp_err_t ret = sd_init();
+    if (ret != ESP_OK) {
+        printf("Failed to initialize SD card: %s\n", esp_err_to_name(ret));
+        return;
+    }
+
+    // Initialize a queue for I2C communication (if needed for inter-task communication)
+    i2c_queue = xQueueCreate(10, sizeof(Telemetry));
 
     // Create a task to read I2C data periodically
     xTaskCreate(i2c_task, "i2c_task", 2048, &telemetry, 5, NULL);
 
-    // Create a task to read ZE27O3 data periodically
-    xTaskCreate(ze27o3_task, "ze27o3_task", 2048, &telemetry, 5, NULL);
+    // Create a task to write telemetry data to SD card periodically
+    xTaskCreate(telemetry_task, "telemetry_task", 4096, NULL, 10, NULL);
 
 }
 
@@ -93,6 +108,16 @@ static void i2c_task(void *arg){
         telemetry->MS5611_temperature = ms5611_calculateTemperature();
         telemetry->MS5611_pressure = ms5611_calculatePressure();
         printf("MS5611 Temperature: %.2f, Pressure: %.2f\n", telemetry->MS5611_temperature/100.0, telemetry->MS5611_pressure/100.0);
+        Telemetry telemetry_copy = {
+            .SPS30_pm25 = telemetry->SPS30_pm25,
+            .MS5611_temperature = telemetry->MS5611_temperature,
+            .MS5611_pressure = telemetry->MS5611_pressure,
+            .ZE27O3_o3_ppb = telemetry->ZE27O3_o3_ppb
+        };
+
+        xQueueSend(i2c_queue, &telemetry_copy, portMAX_DELAY);
+
+        vTaskDelay(pdMS_TO_TICKS(500)); // Read every 0.5 second
     }
 }
 
@@ -102,4 +127,33 @@ static void ze27o3_task(void *arg){
         ESP_ERROR_CHECK(ze27o3_readActiveUpload(&telemetry->ZE27O3_o3_ppb));
     }
 
+}
+
+static void telemetry_task(void *arg){
+    Telemetry telemetry;
+
+    while(1){
+        if(xQueueReceive(i2c_queue, &telemetry, portMAX_DELAY) == pdPASS){
+            // printf("Telemetry received from queue: PM2.5=%d, Temp=%.2f, Pressure=%.2f, O3=%d\n",
+            //        telemetry.SPS30_pm25,
+            //        telemetry.MS5611_temperature / 100.0,
+            //        telemetry.MS5611_pressure / 100.0,
+            //        telemetry.ZE27O3_o3_ppb);
+
+            // Write telemetry to SD card
+            char telemetry_data[256];
+            snprintf(telemetry_data, sizeof(telemetry_data), "PM2.5=%d, Temp=%.2f, Pressure=%.2f, O3=%d\n",
+                     telemetry.SPS30_pm25,
+                     telemetry.MS5611_temperature / 100.0,
+                     telemetry.MS5611_pressure / 100.0,
+                     telemetry.ZE27O3_o3_ppb);
+            esp_err_t err = sd_write(telemetry_data);
+            if (err != ESP_OK) {
+                printf("Failed to write telemetry to SD card: %s\n", esp_err_to_name(err));
+            } else {
+                printf("Telemetry written to SD card\n");
+            }
+            vTaskDelay(pdMS_TO_TICKS(500)); // Write every 0.5 seconds
+        }
+    }
 }

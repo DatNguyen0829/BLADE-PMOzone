@@ -17,4 +17,4 @@
 #define MOUNT_POINT "/sdcard"
 
 esp_err_t sd_init(void);
-esp_err_t sd_write(void);
+esp_err_t sd_write(const char *data);
