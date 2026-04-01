@@ -4,5 +4,6 @@ idf_component_register(SRCS "main.c"
                     REQUIRES sps30
                     REQUIRES ms5611
                     REQUIRES ze27o3
+                    REQUIRES sdCard
                     REQUIRES driver
                     )
