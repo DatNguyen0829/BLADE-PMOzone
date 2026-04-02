@@ -3,6 +3,28 @@
 static const char *TAG = "sd_spi_write";
 
 esp_err_t sd_init(void){
+    
+    // // Configure SPI bus
+    // spi_bus_config_t bus_cfg = {
+    //     .mosi_io_num = SD_MOSI,
+    //     .miso_io_num = SD_MISO,
+    //     .sclk_io_num = SD_CLK,
+    //     .quadwp_io_num = -1,
+    //     .quadhd_io_num = -1,
+    //     .max_transfer_sz = 4000,
+    // };
+
+
+    // // Initialize the SPI bus
+    // ret = spi_bus_initialize(SPI2_HOST, &bus_cfg, SPI_DMA_CH_AUTO);
+    // if (ret != ESP_OK) {
+    //     ESP_LOGE(TAG, "spi_bus_initialize failed (%s)", esp_err_to_name(ret));
+    //     return ret;
+    // }
+    
+    // // Use SPI2_HOST for SD card
+    // spi_host_device_t host = SPI2_HOST;
+
     esp_err_t ret;
 
     // Pull CS high before SD init
@@ -10,35 +32,15 @@ esp_err_t sd_init(void){
     gpio_set_direction(SD_CS, GPIO_MODE_OUTPUT);
     gpio_set_level(SD_CS, 1);
     vTaskDelay(pdMS_TO_TICKS(10)); // Short delay to ensure CS is stable before SPI init
-    
-    // Configure SPI bus
-    spi_bus_config_t bus_cfg = {
-        .mosi_io_num = SD_MOSI,
-        .miso_io_num = SD_MISO,
-        .sclk_io_num = SD_CLK,
-        .quadwp_io_num = -1,
-        .quadhd_io_num = -1,
-        .max_transfer_sz = 4000,
-    };
 
-   // Use SPI2_HOST for SD card
-    spi_host_device_t host = SPI2_HOST;
-
-    // Initialize the SPI bus
-    ret = spi_bus_initialize(host, &bus_cfg, SPI_DMA_CH_AUTO);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "spi_bus_initialize failed (%s)", esp_err_to_name(ret));
-        return ret;
-    }
-    
-    // 2) Configure SD device on SPI
+    // Configure SD device on SPI
     sdmmc_host_t host_cfg = SDSPI_HOST_DEFAULT();
     host_cfg.max_freq_khz = 1000;   // 4 MHz (try 1000 or even 400 if still failing)
-    host_cfg.slot = host;
+    host_cfg.slot = ESP_SPI_HOST;
 
     sdspi_device_config_t slot_cfg = SDSPI_DEVICE_CONFIG_DEFAULT();
     slot_cfg.gpio_cs = SD_CS;
-    slot_cfg.host_id = host;
+    slot_cfg.host_id = ESP_SPI_HOST;
 
     // 3) Mount FAT filesystem
     esp_vfs_fat_sdmmc_mount_config_t mount_cfg = {
@@ -51,7 +53,7 @@ esp_err_t sd_init(void){
     ret = esp_vfs_fat_sdspi_mount(MOUNT_POINT, &host_cfg, &slot_cfg, &mount_cfg, &card);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to mount SD card (%s)", esp_err_to_name(ret));
-        spi_bus_free(host);
+        spi_bus_free(ESP_SPI_HOST);
         return ret;
     }
 

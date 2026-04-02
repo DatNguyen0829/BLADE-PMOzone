@@ -9,10 +9,8 @@
 #include "sdmmc_cmd.h"
 #include "esp_log.h"
 #include "esp_err.h"
+#include "spi_handle.h"
 
-#define SD_MOSI      23
-#define SD_MISO      19
-#define SD_CLK       18
 #define SD_CS        27
 #define MOUNT_POINT "/sdcard"
 

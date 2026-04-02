@@ -1,7 +1,5 @@
 idf_component_register(
-    SRCS "sd.c"
+    SRCS "spi_handle.c"
     INCLUDE_DIRS "include"
-    REQUIRES spi_handle
     REQUIRES driver
-    REQUIRES fatfs
 )
