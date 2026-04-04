@@ -20,23 +20,3 @@ void spi_init(void)
         ESP_LOGI("SPI", "SPI bus initialized successfully");
     }
 }
-
-void spi_add_device(uint8_t cs_num, spi_device_handle_t *spi_device)
-{
-    spi_device_interface_config_t devcfg = {
-        // configure device_structure
-        .clock_speed_hz = 12 * 1000 * 1000,                             // Clock out at 12 MHz
-        .mode = 0,                                                      // SPI mode 0: CPOL:-0 and CPHA:-0
-        .spics_io_num = cs_num,                                     // This field is used to specify the GPIO pin that is to be used as CS'
-        .queue_size = 7,                                                // We want to be able to queue 7 transactions at a time
-    };
-
-    esp_err_t ret = spi_bus_add_device(ESP_SPI_HOST, &devcfg, spi_device);
-    if (ret != ESP_OK) {
-        ESP_LOGE("SPI", "Failed to add SPI device: %s", esp_err_to_name(ret));
-    } else {
-        ESP_LOGI("SPI", "SPI device added successfully");
-    }
-
-
-}

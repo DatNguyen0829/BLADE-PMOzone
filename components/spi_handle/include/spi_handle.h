@@ -12,5 +12,3 @@
 #define ESP_SPI_HOST  SPI2_HOST
 
 void spi_init(void);
-
-void spi_add_device(uint8_t cs_num, spi_device_handle_t *spi_device);

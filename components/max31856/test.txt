@@ -1,0 +1,253 @@
+/* Including required library files */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <inttypes.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "esp_system.h"
+#include "driver/spi_master.h"
+#include "driver/gpio.h"
+#include "esp_log.h"
+#include "esp_err.h"
+
+/* Defining pins for ESP32 which uses MISO, MOSI, CS, SCLK */
+#define ESP_HOST     VSPI_HOST
+#define PIN_NUM_MISO GPIO_NUM_32
+#define PIN_NUM_MOSI GPIO_NUM_23
+#define PIN_NUM_CLK  GPIO_NUM_18
+#define PIN_NUM_CS   GPIO_NUM_5
+
+#define SPI_TAG "MAX31856"
+
+/* MAX31856 registers */
+#define MAX31856_CR0_REG      0x00
+#define MAX31856_CR1_REG      0x01
+#define MAX31856_MASK_REG     0x02
+#define MAX31856_CJHF_REG     0x03
+#define MAX31856_CJLF_REG     0x04
+#define MAX31856_LTHFTH_REG   0x05
+#define MAX31856_LTHFTL_REG   0x06
+#define MAX31856_LTLFTH_REG   0x07
+#define MAX31856_LTLFTL_REG   0x08
+#define MAX31856_CJTO_REG     0x09
+#define MAX31856_CJTH_REG     0x0A
+#define MAX31856_CJTL_REG     0x0B
+#define MAX31856_LTCBH_REG    0x0C
+#define MAX31856_LTCBM_REG    0x0D
+#define MAX31856_LTCBL_REG    0x0E
+#define MAX31856_SR_REG       0x0F
+
+/* CR0 bits */
+#define MAX31856_CR0_CMODE      0x80
+#define MAX31856_CR0_OCFAULT1   0x20
+#define MAX31856_CR0_OCFAULT0   0x10
+#define MAX31856_CR0_CJ         0x08
+#define MAX31856_CR0_FAULT      0x04
+#define MAX31856_CR0_FAULTCLR   0x02
+#define MAX31856_CR0_1SHOT      0x01
+
+/* Thermocouple types for CR1 */
+#define MAX31856_TCTYPE_B       0x00
+#define MAX31856_TCTYPE_E       0x01
+#define MAX31856_TCTYPE_J       0x02
+#define MAX31856_TCTYPE_K       0x03
+#define MAX31856_TCTYPE_N       0x04
+#define MAX31856_TCTYPE_R       0x05
+#define MAX31856_TCTYPE_S       0x06
+#define MAX31856_TCTYPE_T       0x07
+
+/* Declaring functions */
+void vSpiInit(void);
+void spi_write_reg(uint8_t reg, uint8_t data);
+uint8_t spi_read_reg(uint8_t reg);
+void max31856_init_device(void);
+float max31856_read_thermocouple_temp(void);
+float max31856_read_cold_junction_temp(void);
+uint8_t max31856_read_fault(void);
+void max31856_print_fault(uint8_t fault);
+
+esp_err_t ret;
+spi_device_handle_t spi;
+
+void vSpiInit(void)
+{
+    spi_bus_config_t buscfg = {
+        .miso_io_num = PIN_NUM_MISO,
+        .mosi_io_num = PIN_NUM_MOSI,
+        .sclk_io_num = PIN_NUM_CLK,
+        .quadwp_io_num = -1,
+        .quadhd_io_num = -1,
+        .max_transfer_sz = 64
+    };
+
+    spi_device_interface_config_t devcfg = {
+        .clock_speed_hz = 1000000,      // 1 MHz is a safe speed for MAX31856
+        .mode = 1,                      // MAX31856 uses SPI mode 1
+        .spics_io_num = PIN_NUM_CS,     // ESP-IDF manages CS automatically
+        .queue_size = 7,
+    };
+
+    ret = spi_bus_initialize(ESP_HOST, &buscfg, SPI_DMA_CH_AUTO);
+    ESP_ERROR_CHECK(ret);
+
+    ret = spi_bus_add_device(ESP_HOST, &devcfg, &spi);
+    ESP_ERROR_CHECK(ret);
+}
+
+void spi_write_reg(uint8_t reg, uint8_t data)
+{
+    /* MAX31856 write command: set MSB of register address */
+    spi_transaction_t trans_desc = {
+        .flags = SPI_TRANS_USE_TXDATA,
+        .tx_data = { (uint8_t)(reg | 0x80), data },
+        .length = 16,
+    };
+
+    ret = spi_device_polling_transmit(spi, &trans_desc);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(SPI_TAG, "SPI write failed for reg 0x%02X", reg);
+        return;
+    }
+
+    ESP_LOGI(SPI_TAG, "Wrote 0x%02X to reg 0x%02X", data, reg);
+}
+
+uint8_t spi_read_reg(uint8_t reg)
+{
+    /* MAX31856 read command: MSB clear */
+    spi_transaction_t trans_desc = {0};
+    uint8_t tx_data[2] = { (uint8_t)(reg & 0x7F), 0x00 };
+    uint8_t rx_data[2] = { 0 };
+
+    trans_desc.length = 16;
+    trans_desc.tx_buffer = tx_data;
+    trans_desc.rx_buffer = rx_data;
+
+    ret = spi_device_polling_transmit(spi, &trans_desc);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(SPI_TAG, "SPI read failed for reg 0x%02X", reg);
+        return 0;
+    }
+
+    ESP_LOGI(SPI_TAG, "Read reg 0x%02X = 0x%02X", reg, rx_data[1]);
+    return rx_data[1];
+}
+
+void max31856_init_device(void)
+{
+    uint8_t cr0 = 0;
+    uint8_t cr1 = 0;
+    uint8_t mask = 0x00;
+
+    /* CR0:
+       - one-shot mode
+       - clear existing faults
+       - enable open-circuit fault detection
+    */
+    cr0 = MAX31856_CR0_FAULTCLR | MAX31856_CR0_OCFAULT1;
+
+    /* CR1:
+       - set thermocouple type to K
+    */
+    cr1 = MAX31856_TCTYPE_K;
+
+    spi_write_reg(MAX31856_CR0_REG, cr0);
+    spi_write_reg(MAX31856_CR1_REG, cr1);
+    spi_write_reg(MAX31856_MASK_REG, mask);
+
+    ESP_LOGI(SPI_TAG, "MAX31856 initialized");
+}
+
+uint8_t max31856_read_fault(void)
+{
+    return spi_read_reg(MAX31856_SR_REG);
+}
+
+void max31856_print_fault(uint8_t fault)
+{
+    if (fault == 0)
+    {
+        ESP_LOGI(SPI_TAG, "No fault");
+        return;
+    }
+
+    ESP_LOGW(SPI_TAG, "Fault register = 0x%02X", fault);
+
+    if (fault & 0x80) ESP_LOGW(SPI_TAG, "Cold junction out of range");
+    if (fault & 0x40) ESP_LOGW(SPI_TAG, "Thermocouple out of range");
+    if (fault & 0x20) ESP_LOGW(SPI_TAG, "Cold junction high fault");
+    if (fault & 0x10) ESP_LOGW(SPI_TAG, "Cold junction low fault");
+    if (fault & 0x08) ESP_LOGW(SPI_TAG, "Thermocouple high fault");
+    if (fault & 0x04) ESP_LOGW(SPI_TAG, "Thermocouple low fault");
+    if (fault & 0x02) ESP_LOGW(SPI_TAG, "Voltage under/over fault");
+    if (fault & 0x01) ESP_LOGW(SPI_TAG, "Open circuit fault");
+}
+
+float max31856_read_cold_junction_temp(void)
+{
+    uint8_t msb = spi_read_reg(MAX31856_CJTH_REG);
+    uint8_t lsb = spi_read_reg(MAX31856_CJTL_REG);
+
+    int16_t raw = ((int16_t)msb << 8) | lsb;
+    raw >>= 2;
+
+    /* sign extend 14-bit */
+    if (raw & (1 << 13))
+    {
+        raw |= 0xC000;
+    }
+
+    return raw * 0.015625f;
+}
+
+float max31856_read_thermocouple_temp(void)
+{
+    uint8_t cr0;
+
+    /* Trigger one-shot conversion */
+    cr0 = MAX31856_CR0_OCFAULT1 | MAX31856_CR0_1SHOT;
+    spi_write_reg(MAX31856_CR0_REG, cr0);
+
+    /* Wait for conversion to complete */
+    vTaskDelay(pdMS_TO_TICKS(200));
+
+    uint8_t b0 = spi_read_reg(MAX31856_LTCBH_REG);
+    uint8_t b1 = spi_read_reg(MAX31856_LTCBM_REG);
+    uint8_t b2 = spi_read_reg(MAX31856_LTCBL_REG);
+
+    int32_t raw = ((int32_t)b0 << 16) | ((int32_t)b1 << 8) | b2;
+    raw >>= 5;
+
+    /* sign extend 19-bit */
+    if (raw & (1 << 18))
+    {
+        raw |= 0xFFF80000;
+    }
+
+    return raw * 0.0078125f;
+}
+
+void app_main(void)
+{
+    vSpiInit();
+    max31856_init_device();
+
+    while (1)
+    {
+        float tc_temp = max31856_read_thermocouple_temp();
+        float cj_temp = max31856_read_cold_junction_temp();
+        uint8_t fault = max31856_read_fault();
+
+        printf("\n-----------------------------\n");
+        printf("Thermocouple Temp : %.2f C\n", tc_temp);
+        printf("Cold Junction Temp: %.2f C\n", cj_temp);
+        printf("Fault Register    : 0x%02X\n", fault);
+
+        max31856_print_fault(fault);
+
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}

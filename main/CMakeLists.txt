@@ -6,5 +6,6 @@ idf_component_register(SRCS "main.c"
                     REQUIRES ms5611
                     REQUIRES ze27o3
                     REQUIRES sdCard
+                    REQUIRES max31856
                     REQUIRES driver
                     )
