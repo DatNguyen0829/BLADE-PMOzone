@@ -40,4 +40,8 @@ uint8_t max31856_read_fault(spi_device_handle_t *spi_device);
 // read junction temperature from MAX31856
 float max31856_read_thermocouple_temp(spi_device_handle_t *spi_device);
 
+// Print human-readable fault information based on the fault status byte
+void max31856_print_fault(uint8_t fault);
+
+
  

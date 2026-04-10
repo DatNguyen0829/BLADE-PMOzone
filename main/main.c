@@ -35,37 +35,37 @@ static void ze27o3_task(void *arg);
 
 void app_main(void)
 {
-    // Initialize I2C bus
-    i2c_master_init(&i2c_bus_handle);
-    printf("I2C bus initialized\n");
+    // // Initialize I2C bus
+    // i2c_master_init(&i2c_bus_handle);
+    // printf("I2C bus initialized\n");
 
-    // Add SPS30 device to the bus
-    i2c_add_device(SPS30_I2C_ADDR, &i2c_bus_handle, &sps30_dev_handle);
-    printf("SPS30 device added to I2C bus\n");
+    // // Add SPS30 device to the bus
+    // i2c_add_device(SPS30_I2C_ADDR, &i2c_bus_handle, &sps30_dev_handle);
+    // printf("SPS30 device added to I2C bus\n");
 
-    // Add MS5611 device to the bus
-    i2c_add_device(MS5611_I2C_ADDR, &i2c_bus_handle, &ms5611_dev_handle);
-    printf("MS5611 device added to I2C bus\n");
+    // // Add MS5611 device to the bus
+    // i2c_add_device(MS5611_I2C_ADDR, &i2c_bus_handle, &ms5611_dev_handle);
+    // printf("MS5611 device added to I2C bus\n");
 
-    // Start SPS30 measurement
-    ESP_ERROR_CHECK(sps30_start(sps30_dev_handle));
-    printf("SPS30 measurement started\n");
-    vTaskDelay(pdMS_TO_TICKS(50)); // Wait for measurement to start
+    // // Start SPS30 measurement
+    // ESP_ERROR_CHECK(sps30_start(sps30_dev_handle));
+    // printf("SPS30 measurement started\n");
+    // vTaskDelay(pdMS_TO_TICKS(50)); // Wait for measurement to start
 
-    //Reset ms5611 sensor
-    ms5611_reset(ms5611_dev_handle);
-    printf("MS5611 sensor reset complete.\n");
-    vTaskDelay(pdMS_TO_TICKS(10));           // Wait for reset to complete
-    ms5611_read_prom(ms5611_dev_handle);     //Read device Prom values
+    // //Reset ms5611 sensor
+    // ms5611_reset(ms5611_dev_handle);
+    // printf("MS5611 sensor reset complete.\n");
+    // vTaskDelay(pdMS_TO_TICKS(10));           // Wait for reset to complete
+    // ms5611_read_prom(ms5611_dev_handle);     //Read device Prom values
 
-    // Initialize ZE27O3 UART
-    ESP_ERROR_CHECK(ze27_uart_init());
+    // // Initialize ZE27O3 UART
+    // ESP_ERROR_CHECK(ze27_uart_init());
 
-    // Create a task to read I2C data periodically
-    xTaskCreate(i2c_task, "i2c_task", 2048, &telemetry, 5, NULL);
+    // // Create a task to read I2C data periodically
+    // xTaskCreate(i2c_task, "i2c_task", 2048, &telemetry, 5, NULL);
 
-    // Create a task to read ZE27O3 data periodically
-    xTaskCreate(ze27o3_task, "ze27o3_task", 2048, &telemetry, 5, NULL);
+    // // Create a task to read ZE27O3 data periodically
+    // xTaskCreate(ze27o3_task, "ze27o3_task", 2048, &telemetry, 5, NULL);
 
     // Initialize spi_bus
     spi_init();
@@ -96,6 +96,11 @@ void app_main(void)
             printf("Failed to write data to SD card\n");
         }
         vTaskDelay(pdMS_TO_TICKS(1000)); // Write to SD card every 5 seconds
+
+        float thermocouple_temp = max31856_read_thermocouple_temp(&max31856_spi_handle);
+        printf("MAX31856 Thermocouple Temperature: %.2f °C\n", thermocouple_temp);
+
+        vTaskDelay(pdMS_TO_TICKS(1000)); // Read MAX31856 every 1 second
     }
 }
 

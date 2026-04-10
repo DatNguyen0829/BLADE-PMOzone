@@ -72,9 +72,9 @@ esp_err_t max31856_configure(spi_device_handle_t *spi_device){
     uint8_t mask = 0x00;
 
     /* CR0:
-       - one-shot mode
-       - clear existing faults
-       - enable open-circuit fault detection
+       - one-shot mode: 0x40
+       - clear existing faults: 0x02
+       - enable open-circuit fault detection: 0x20
     */
     cr0 = 0x02 | 0x20;
 
@@ -114,3 +114,49 @@ uint8_t max31856_read_fault(spi_device_handle_t *spi_device)
     return max31856_read_register(spi_device, MAX_SR);
 }
 
+float max31856_read_thermocouple_temp(spi_device_handle_t *spi_device){
+    /* Trigger one-shot conversion with open-circuit detection */
+    uint8_t cr0 = 0x40 | 0x20;
+
+    if (max31856_write_register(spi_device, MAX_CRO, cr0) != ESP_OK)
+    {
+        ESP_LOGE(SPI_TAG, "Failed to trigger one-shot conversion");
+        return 0.0f;
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(200)); // Wait for conversion to complete (max conversion time is ~100ms)
+
+    uint8_t ltcbh = max31856_read_register(spi_device, MAX31856_LTCBH_REG);
+    uint8_t ltcbm = max31856_read_register(spi_device, MAX31856_LTCBM_REG);
+    uint8_t ltcbL = max31856_read_register(spi_device, MAX31856_LTCBL_REG);
+
+    
+    int32_t raw = ((int32_t)ltcbh << 16) |
+                  ((int32_t)ltcbm << 8)  |
+                  (int32_t)ltcbL;
+
+    raw >>= 5;
+
+    if (raw & (1 << 18))
+    {
+        raw |= 0xFFF80000;
+    }
+
+    float temp_c = raw * 0.0078125f;
+
+    ESP_LOGI(SPI_TAG,
+             "LTCBH=0x%02X LTCBM=0x%02X LTCBL=0x%02X raw=%ld temp=%.2f C",
+             ltcbh, ltcbm, ltcbL, (long)raw, temp_c);
+
+    return temp_c;
+
+}
+
+
+void max31856_print_fault(uint8_t fault){
+    if (fault == 0) {
+        ESP_LOGI(SPI_TAG, "No faults detected");
+        return;
+    }
+    
+}
