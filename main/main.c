@@ -17,6 +17,7 @@
 #include "ze27o3.h"
 #include "sd.h"
 #include "max31856.h"
+#include "wifi_telem.h"
 
 /* -------------------- Handles -------------------- */
 i2c_master_bus_handle_t i2c_bus_handle;
@@ -41,8 +42,8 @@ typedef struct {
     union {
         struct {
             uint16_t sps30_pm25;
-            int32_t ms5611_temperature; // hundredths of deg C
-            int32_t ms5611_pressure;    // hundredths of mbar or Pa depending on driver
+            int32_t ms5611_temperature; 
+            int32_t ms5611_pressure;    
             bool sps30_valid;
             bool ms5611_valid;
         } i2c;

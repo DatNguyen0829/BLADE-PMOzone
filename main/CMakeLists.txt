@@ -7,5 +7,6 @@ idf_component_register(SRCS "main.c"
                     REQUIRES ze27o3
                     REQUIRES sdCard
                     REQUIRES max31856
+                    REQUIRES wifi_telem
                     REQUIRES driver
                     )
