@@ -25,6 +25,7 @@ i2c_master_dev_handle_t sps30_dev_handle;
 i2c_master_dev_handle_t ms5611_dev_handle;
 spi_device_handle_t max31856_spi_handle;
 static SemaphoreHandle_t spi_mutex; // SPI_MUTEX
+static SemaphoreHandle_t telem_mutex; // TELEMETRY_MUTEX
 
 static QueueHandle_t telemetry_queue;
 
@@ -74,17 +75,33 @@ typedef struct {
     bool ze27o3_valid;
 } telemetry_snapshot_t;
 
+static telemetry_snapshot_t latest = {0}; //Records the latest valid values for each sensor, updated by telemetry_task
+
 /* -------------------- Task Prototypes -------------------- */
 static void i2c_task(void *arg);
 static void max31856_task(void *arg);
 static void ze27o3_task(void *arg);
 static void telemetry_task(void *arg);
+static void udp_telem_task(void *arg);
 
 void app_main(void)
-{
+{   
+    /* RTOS Variables */
     telemetry_queue = xQueueCreate(16, sizeof(telemetry_msg_t));
     if (telemetry_queue == NULL) {
         ESP_LOGE(TAG, "Failed to create telemetry queue");
+        return;
+    }
+
+    spi_mutex = xSemaphoreCreateMutex();
+    if (spi_mutex == NULL) {
+        ESP_LOGE(TAG, "Failed to create SPI mutex");
+        return;
+    }
+
+    telem_mutex = xSemaphoreCreateMutex();
+    if (telem_mutex == NULL) {
+        ESP_LOGE(TAG, "Failed to create telemetry mutex");
         return;
     }
 
@@ -92,14 +109,14 @@ void app_main(void)
     i2c_master_init(&i2c_bus_handle);
     ESP_LOGI(TAG, "I2C bus initialized");
 
-    // i2c_add_device(SPS30_I2C_ADDR, &i2c_bus_handle, &sps30_dev_handle);
-    // ESP_LOGI(TAG, "SPS30 added");
+    i2c_add_device(SPS30_I2C_ADDR, &i2c_bus_handle, &sps30_dev_handle);
+    ESP_LOGI(TAG, "SPS30 added");
 
     i2c_add_device(MS5611_I2C_ADDR, &i2c_bus_handle, &ms5611_dev_handle);
     ESP_LOGI(TAG, "MS5611 added");
 
-    // ESP_ERROR_CHECK(sps30_start(sps30_dev_handle));
-    // ESP_LOGI(TAG, "SPS30 measurement started");
+    ESP_ERROR_CHECK(sps30_start(sps30_dev_handle));
+    ESP_LOGI(TAG, "SPS30 measurement started");
     vTaskDelay(pdMS_TO_TICKS(50));
 
     ms5611_reset(ms5611_dev_handle);
@@ -114,12 +131,6 @@ void app_main(void)
     /* ---------- SPI / SD / MAX31856 Init ---------- */
     spi_init();
     ESP_LOGI(TAG, "SPI bus initialized");
-
-    spi_mutex = xSemaphoreCreateMutex();
-    if (spi_mutex == NULL) {
-        ESP_LOGE(TAG, "Failed to create SPI mutex");
-        return;
-    }
 
     if (sd_init() == ESP_OK) {
         ESP_LOGI(TAG, "SD card initialized");
@@ -139,10 +150,14 @@ void app_main(void)
         ESP_LOGE(TAG, "MAX31856 config failed");
     }
 
+    /* ---------- Initialize WIFI  ------- */
+    ESP_ERROR_CHECK(wifi_telem_init());
+    
     /* ---------- Create Tasks ---------- */
     xTaskCreate(i2c_task, "i2c_task", 4096, NULL, 5, NULL);
     xTaskCreate(max31856_task, "max31856_task", 4096, NULL, 5, NULL);
     // xTaskCreate(ze27o3_task, "ze27o3_task", 4096, NULL, 5, NULL);
+    xTaskCreate(udp_telem_task, "udp_telem_task", 4096, NULL, 5, NULL);
     xTaskCreate(telemetry_task, "telemetry_task", 4096, NULL, 10, NULL);
 }
 
@@ -155,17 +170,19 @@ static void i2c_task(void *arg)
         memset(&msg, 0, sizeof(msg));
         msg.source = TELEMETRY_SRC_I2C;
 
-        // /* ---- SPS30 ---- */
-        // bool sps30_ready_flag = false;
-        // esp_err_t err = sps30_ready(sps30_dev_handle, &sps30_ready_flag);
-        // if (err == ESP_OK && sps30_ready_flag) {
-        //     err = sps30_read_pm25(sps30_dev_handle, &msg.data.i2c.sps30_pm25);
-        //     if (err == ESP_OK) {
-        //         msg.data.i2c.sps30_valid = true;
-        //     } else {
-        //         ESP_LOGW(TAG, "Failed to read SPS30 PM2.5: %s", esp_err_to_name(err));
-        //     }
-        // }
+        /* ---- SPS30 ---- */
+        bool sps30_ready_flag = false;
+        esp_err_t err = sps30_ready(sps30_dev_handle, &sps30_ready_flag);
+        if (err == ESP_OK && sps30_ready_flag) {
+            err = sps30_read_pm25(sps30_dev_handle, &msg.data.i2c.sps30_pm25);
+            if (err == ESP_OK) {
+                msg.data.i2c.sps30_valid = true;
+            } else {
+                ESP_LOGW(TAG, "Failed to read SPS30 PM2.5: %s", esp_err_to_name(err));
+            }
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(1000)); // Short delay between sensor reads to avoid bus congestion
 
         /* ---- MS5611 ---- */
         ms5611_read_conversion(ms5611_dev_handle, MS5611_D1_OSR_4096);
@@ -244,7 +261,7 @@ static void ze27o3_task(void *arg)
 static void telemetry_task(void *arg)
 {
     telemetry_msg_t msg;
-    telemetry_snapshot_t latest = {0};
+    telemetry_snapshot_t copy = {0};
 
     TickType_t last_log_time = xTaskGetTickCount();
     const TickType_t log_period = pdMS_TO_TICKS(250);
@@ -252,35 +269,40 @@ static void telemetry_task(void *arg)
     while (1) {
         /* Wait up to 1 second for new data */
         if (xQueueReceive(telemetry_queue, &msg, pdMS_TO_TICKS(200)) == pdPASS) {
-            switch (msg.source) {
-                case TELEMETRY_SRC_I2C:
-                    if (msg.data.i2c.sps30_valid) {
-                        latest.sps30_pm25 = msg.data.i2c.sps30_pm25;
-                        latest.sps30_valid = true;
-                    }
-                    if (msg.data.i2c.ms5611_valid) {
-                        latest.ms5611_temperature = msg.data.i2c.ms5611_temperature;
-                        latest.ms5611_pressure = msg.data.i2c.ms5611_pressure;
-                        latest.ms5611_valid = true;
-                    }
-                    break;
+            if (xSemaphoreTake(telem_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+                /* Update latest snapshot with new data */
+                switch (msg.source) {
+                    case TELEMETRY_SRC_I2C:
+                        if (msg.data.i2c.sps30_valid) {
+                            latest.sps30_pm25 = msg.data.i2c.sps30_pm25;
+                            latest.sps30_valid = true;
+                        }
+                        if (msg.data.i2c.ms5611_valid) {
+                            latest.ms5611_temperature = msg.data.i2c.ms5611_temperature;
+                            latest.ms5611_pressure = msg.data.i2c.ms5611_pressure;
+                            latest.ms5611_valid = true;
+                        }
+                        break;
 
-                case TELEMETRY_SRC_MAX31856:
-                    if (msg.data.max31856.valid) {
-                        latest.max31856_temp = msg.data.max31856.thermocouple_temp;
-                        latest.max31856_valid = true;
-                    }
-                    break;
+                    case TELEMETRY_SRC_MAX31856:
+                        if (msg.data.max31856.valid) {
+                            latest.max31856_temp = msg.data.max31856.thermocouple_temp;
+                            latest.max31856_valid = true;
+                        }
+                        break;
 
-                case TELEMETRY_SRC_ZE27O3:
-                    if (msg.data.ze27o3.valid) {
-                        latest.ze27o3_o3_ppb = msg.data.ze27o3.o3_ppb;
-                        latest.ze27o3_valid = true;
-                    }
-                    break;
+                    case TELEMETRY_SRC_ZE27O3:
+                        if (msg.data.ze27o3.valid) {
+                            latest.ze27o3_o3_ppb = msg.data.ze27o3.o3_ppb;
+                            latest.ze27o3_valid = true;
+                        }
+                        break;
 
-                default:
-                    break;
+                    default:
+                        break;
+                }
+                copy = latest; // Make a copy for logging to minimize time holding mutex
+                xSemaphoreGive(telem_mutex); // Release mutex after updating latest snapshot
             }
         }
 
@@ -292,20 +314,20 @@ static void telemetry_task(void *arg)
                 telemetry_data,
                 sizeof(telemetry_data),
                 "PM2.5=%s%u, MS5611_Temp=%s%.2f, MS5611_Press=%s%.2f, MAX31856_Temp=%s%.2f, O3=%s%u\n",
-                latest.sps30_valid ? "" : "NA,",
-                latest.sps30_valid ? latest.sps30_pm25 : 0,
+                copy.sps30_valid ? "" : "NA,",
+                copy.sps30_valid ? copy.sps30_pm25 : 0,
 
-                latest.ms5611_valid ? "" : "NA,",
-                latest.ms5611_valid ? (latest.ms5611_temperature / 100.0) : 0.0,
+                copy.ms5611_valid ? "" : "NA,",
+                copy.ms5611_valid ? (copy.ms5611_temperature / 100.0) : 0.0,
 
-                latest.ms5611_valid ? "" : "NA,",
-                latest.ms5611_valid ? (latest.ms5611_pressure / 100.0) : 0.0,
+                copy.ms5611_valid ? "" : "NA,",
+                copy.ms5611_valid ? (copy.ms5611_pressure / 100.0) : 0.0,
 
-                latest.max31856_valid ? "" : "NA,",
-                latest.max31856_valid ? latest.max31856_temp : 0.0,
+                copy.max31856_valid ? "" : "NA,",
+                copy.max31856_valid ? copy.max31856_temp : 0.0,
 
-                latest.ze27o3_valid ? "" : "NA,",
-                latest.ze27o3_valid ? latest.ze27o3_o3_ppb : 0
+                copy.ze27o3_valid ? "" : "NA,",
+                copy.ze27o3_valid ? copy.ze27o3_o3_ppb : 0
             );
 
             if (xSemaphoreTake(spi_mutex, pdMS_TO_TICKS(500)) == pdTRUE) {
@@ -324,5 +346,56 @@ static void telemetry_task(void *arg)
             
             last_log_time = xTaskGetTickCount();
         }
+    }
+}
+
+static void udp_telem_task(void *arg)
+{
+    // Placeholder for future implementation of UDP telemetry transmission
+    while (1) {
+        telemetry_snapshot_t copy = {0};
+
+        /* Get latest telemetry safely */
+        if (xSemaphoreTake(telem_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+            copy = latest;
+            xSemaphoreGive(telem_mutex);
+        } else {
+            ESP_LOGW(TAG, "Failed to lock telemetry mutex");
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
+
+        /* Build JSON message */
+        char msg[256];
+        int len = snprintf(msg, sizeof(msg),
+            "\"pm25\":%u,"
+            "\"ms_temp\":%.2f,"
+            "\"ms_press\":%.2f,"
+            "\"tc_temp\":%.2f,"
+            "\"o3\":%u}",
+            copy.sps30_valid ? copy.sps30_pm25 : 0,
+            copy.ms5611_valid ? copy.ms5611_temperature / 100.0 : 0.0,
+            copy.ms5611_valid ? copy.ms5611_pressure / 100.0 : 0.0,
+            copy.max31856_valid ? copy.max31856_temp : 0.0,
+            copy.ze27o3_valid ? copy.ze27o3_o3_ppb : 0
+        );
+
+        if (len <= 0) {
+            ESP_LOGW(TAG, "Failed to format UDP message");
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
+
+        /* Send over Wi-Fi */
+        if (wifi_telem_is_connected()) {
+            esp_err_t err = wifi_telem_send(msg);
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "UDP send failed");
+            }
+        } else {
+            ESP_LOGW(TAG, "Wi-Fi not connected, skipping send");
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(250));  // send every 0.25 second
     }
 }
