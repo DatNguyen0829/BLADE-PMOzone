@@ -91,14 +91,14 @@ void app_main(void)
     i2c_master_init(&i2c_bus_handle);
     ESP_LOGI(TAG, "I2C bus initialized");
 
-    // i2c_add_device(SPS30_I2C_ADDR, &i2c_bus_handle, &sps30_dev_handle);
-    // ESP_LOGI(TAG, "SPS30 added");
+    i2c_add_device(SPS30_I2C_ADDR, &i2c_bus_handle, &sps30_dev_handle);
+    ESP_LOGI(TAG, "SPS30 added");
 
     i2c_add_device(MS5611_I2C_ADDR, &i2c_bus_handle, &ms5611_dev_handle);
     ESP_LOGI(TAG, "MS5611 added");
 
-    // ESP_ERROR_CHECK(sps30_start(sps30_dev_handle));
-    // ESP_LOGI(TAG, "SPS30 measurement started");
+    ESP_ERROR_CHECK(sps30_start(sps30_dev_handle));
+    ESP_LOGI(TAG, "SPS30 measurement started");
     vTaskDelay(pdMS_TO_TICKS(50));
 
     ms5611_reset(ms5611_dev_handle);
@@ -154,17 +154,19 @@ static void i2c_task(void *arg)
         memset(&msg, 0, sizeof(msg));
         msg.source = TELEMETRY_SRC_I2C;
 
-        // /* ---- SPS30 ---- */
-        // bool sps30_ready_flag = false;
-        // esp_err_t err = sps30_ready(sps30_dev_handle, &sps30_ready_flag);
-        // if (err == ESP_OK && sps30_ready_flag) {
-        //     err = sps30_read_pm25(sps30_dev_handle, &msg.data.i2c.sps30_pm25);
-        //     if (err == ESP_OK) {
-        //         msg.data.i2c.sps30_valid = true;
-        //     } else {
-        //         ESP_LOGW(TAG, "Failed to read SPS30 PM2.5: %s", esp_err_to_name(err));
-        //     }
-        // }
+        /* ---- SPS30 ---- */
+        bool sps30_ready_flag = false;
+        esp_err_t err = sps30_ready(sps30_dev_handle, &sps30_ready_flag);
+        if (err == ESP_OK && sps30_ready_flag) {
+            err = sps30_read_pm25(sps30_dev_handle, &msg.data.i2c.sps30_pm25);
+            if (err == ESP_OK) {
+                msg.data.i2c.sps30_valid = true;
+            } else {
+                ESP_LOGW(TAG, "Failed to read SPS30 PM2.5: %s", esp_err_to_name(err));
+            }
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(150)); // Short delay between sensor to not cause bus congestion
 
         /* ---- MS5611 ---- */
         ms5611_read_conversion(ms5611_dev_handle, MS5611_D1_OSR_4096);
@@ -182,7 +184,8 @@ static void i2c_task(void *arg)
             ESP_LOGW(TAG, "Failed to send I2C telemetry");
         }
 
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        //vTaskDelay(pdMS_TO_TICKS(1000));
+        vTaskDelay(pdMS_TO_TICKS(150)); // Short delay between sensor to not cause bus congestion
     }
 }
 

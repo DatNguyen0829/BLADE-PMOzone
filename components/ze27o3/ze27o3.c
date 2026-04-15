@@ -104,3 +104,49 @@ esp_err_t ze27o3_readActiveUpload(uint16_t *o3_ppb)
 
     return ESP_ERR_NOT_FOUND;
 }
+
+esp_err_t ze27o3_turnOffActiveUpload(void)
+{
+    // Turn off commmand: FF 01 78 41 00 00 00 00 0x46
+    uint8_t cmd[9] = {0xFF, 0x01, 0x78, 0x41, 0x00, 0x00, 0x00, 0x00, 0x46};
+    uart_write_bytes(ZE27O3_UART_NUM, (const char *)cmd, sizeof(cmd));
+    return ESP_OK;
+}
+
+esp_err_t ze27o3_readConcentration(uint16_t *o3_ppb)
+{
+    // First send read commmand[0xFF, 0x01, 0x86, 0x00, 0x00, 0x00, 0x00, 0x00, 0x79]
+    uint8_t cmd[9] = {0xFF, 0x01, 0x86, 0x00, 0x00, 0x00, 0x00, 0x00, 0x79};
+    uart_write_bytes(ZE27O3_UART_NUM, (const char *)cmd, sizeof(cmd));
+
+    // Then read response frame
+    uint8_t frame[9];
+
+    int len = uart_read_bytes(
+        ZE27O3_UART_NUM,
+        frame,
+        9,
+        pdMS_TO_TICKS(1000)
+    );
+
+    // Validate and parse response
+    if (len != 9) {
+        return ESP_FAIL;
+    }
+
+    if (frame[0] != 0xFF) return ESP_FAIL;
+    if (frame[1] != 0x86) return ESP_FAIL;
+
+    if (frame[8] != ze27_checksum(frame, 9)) {
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI("ZE27O3", "Received valid frame: %02X %02X %02X %02X %02X %02X %02X %02X %02X",
+                     frame[0], frame[1], frame[2], frame[3], frame[4],
+                     frame[5], frame[6], frame[7], frame[8]);
+    
+    uint16_t ppb = ((uint16_t)frame[2] << 8) | frame[3];
+    *o3_ppb = ppb;
+
+    return ESP_OK;
+}
