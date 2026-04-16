@@ -107,8 +107,9 @@ void app_main(void)
     ms5611_read_prom(ms5611_dev_handle);
 
     /* ---------- ZE27O3 UART Init ---------- */
-    // ESP_ERROR_CHECK(ze27_uart_init());
-    // ESP_LOGI(TAG, "ZE27O3 UART initialized");
+    ESP_ERROR_CHECK(ze27_uart_init());
+    ESP_ERROR_CHECK(ze27o3_turnOffActiveUpload());
+    ESP_LOGI(TAG, "ZE27O3 UART initialized");
 
     /* ---------- SPI / SD / MAX31856 Init ---------- */
     spi_init();
@@ -141,7 +142,7 @@ void app_main(void)
     /* ---------- Create Tasks ---------- */
     xTaskCreate(i2c_task, "i2c_task", 4096, NULL, 5, NULL);
     xTaskCreate(max31856_task, "max31856_task", 4096, NULL, 5, NULL);
-    // xTaskCreate(ze27o3_task, "ze27o3_task", 4096, NULL, 5, NULL);
+    xTaskCreate(ze27o3_task, "ze27o3_task", 4096, NULL, 5, NULL);
     xTaskCreate(telemetry_task, "telemetry_task", 4096, NULL, 10, NULL);
 }
 
@@ -226,7 +227,7 @@ static void ze27o3_task(void *arg)
         memset(&msg, 0, sizeof(msg));
         msg.source = TELEMETRY_SRC_ZE27O3;
 
-        esp_err_t err = ze27o3_readActiveUpload(&msg.data.ze27o3.o3_ppb);
+        esp_err_t err = ze27o3_readConcentration(&msg.data.ze27o3.o3_ppb);
         if (err == ESP_OK) {
             msg.data.ze27o3.valid = true;
             ESP_LOGI(TAG, "ZE27O3 O3: %u ppb", msg.data.ze27o3.o3_ppb);
