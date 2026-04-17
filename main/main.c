@@ -19,6 +19,7 @@
 #include "max31856.h"
 #include "wifi_telem.h"
 
+#define HEAT_GATE 26
 /* -------------------- Handles -------------------- */
 i2c_master_bus_handle_t i2c_bus_handle;
 i2c_master_dev_handle_t sps30_dev_handle;
@@ -156,6 +157,10 @@ void app_main(void)
     /* ---------- Initialize WIFI  ------- */
     ESP_ERROR_CHECK(wifi_telem_init());
     
+    /* ---------- TURN ON HEATING PAD ----- */
+    gpio_reset_pin(HEAT_GATE);
+    gpio_set_direction(HEAT_GATE, GPIO_MODE_OUTPUT);
+    gpio_set_level(HEAT_GATE, 1);
     /* ---------- Create Tasks ---------- */
     xTaskCreate(i2c_task, "i2c_task", 4096, NULL, 5, NULL);
     xTaskCreate(max31856_task, "max31856_task", 4096, NULL, 5, NULL);
@@ -314,10 +319,16 @@ static void telemetry_task(void *arg)
         if ((xTaskGetTickCount() - last_log_time) >= log_period) {
             char telemetry_data[256];
 
+            // Get time 
+            uint32_t ms = pdTICKS_TO_MS(xTaskGetTickCount());
+            float seconds = ms / 1000.0f;
+
             snprintf(
                 telemetry_data,
                 sizeof(telemetry_data),
-                "PM2.5=%s%.2f, PM10=%s%.2f, MS5611_Temp=%s%.2f, MS5611_Press=%s%.2f, MAX31856_Temp=%s%.2f, O3=%s%u\n",
+                "T,%.3f,PM2.5,%s%.2f,PM10,%s%.2f,MS_Temp,%s%.2f,MS_P,%s%.2f,MAX_T,%s%.2f,O3,%s%u\n",
+                seconds,
+                
                 copy.sps30_valid ? "" : "NA,",
                 copy.sps30_valid ? copy.sps30_pm25 : 0,
                 
