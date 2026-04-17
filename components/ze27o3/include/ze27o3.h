@@ -20,3 +20,5 @@
 esp_err_t ze27_uart_init(void);
 uint8_t ze27_checksum(const uint8_t *buf, size_t len);
 esp_err_t ze27o3_readActiveUpload(uint16_t *o3_ppb);
+esp_err_t ze27o3_turnOffActiveUpload(void);
+esp_err_t ze27o3_readConcentration(uint16_t *o3_ppb);

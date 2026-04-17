@@ -42,7 +42,8 @@ typedef struct {
     telemetry_source_t source;
     union {
         struct {
-            uint16_t sps30_pm25;
+            float sps30_pm25;
+            float sps30_pm10;
             int32_t ms5611_temperature; 
             int32_t ms5611_pressure;    
             bool sps30_valid;
@@ -63,7 +64,8 @@ typedef struct {
 
 /* Latest full snapshot used by telemetry_task */
 typedef struct {
-    uint16_t sps30_pm25;
+    float sps30_pm25;
+    float sps30_pm10;
     int32_t ms5611_temperature;
     int32_t ms5611_pressure;
     float max31856_temp;
@@ -125,8 +127,9 @@ void app_main(void)
     ms5611_read_prom(ms5611_dev_handle);
 
     /* ---------- ZE27O3 UART Init ---------- */
-    // ESP_ERROR_CHECK(ze27_uart_init());
-    // ESP_LOGI(TAG, "ZE27O3 UART initialized");
+    ESP_ERROR_CHECK(ze27_uart_init());
+    ESP_ERROR_CHECK(ze27o3_turnOffActiveUpload());
+    ESP_LOGI(TAG, "ZE27O3 UART initialized");
 
     /* ---------- SPI / SD / MAX31856 Init ---------- */
     spi_init();
@@ -156,7 +159,7 @@ void app_main(void)
     /* ---------- Create Tasks ---------- */
     xTaskCreate(i2c_task, "i2c_task", 4096, NULL, 5, NULL);
     xTaskCreate(max31856_task, "max31856_task", 4096, NULL, 5, NULL);
-    // xTaskCreate(ze27o3_task, "ze27o3_task", 4096, NULL, 5, NULL);
+    xTaskCreate(ze27o3_task, "ze27o3_task", 4096, NULL, 5, NULL);
     xTaskCreate(udp_telem_task, "udp_telem_task", 4096, NULL, 5, NULL);
     xTaskCreate(telemetry_task, "telemetry_task", 4096, NULL, 10, NULL);
 }
@@ -174,7 +177,7 @@ static void i2c_task(void *arg)
         bool sps30_ready_flag = false;
         esp_err_t err = sps30_ready(sps30_dev_handle, &sps30_ready_flag);
         if (err == ESP_OK && sps30_ready_flag) {
-            err = sps30_read_pm25(sps30_dev_handle, &msg.data.i2c.sps30_pm25);
+            err = sps30_read_pm(sps30_dev_handle, &msg.data.i2c.sps30_pm25, &msg.data.i2c.sps30_pm10);
             if (err == ESP_OK) {
                 msg.data.i2c.sps30_valid = true;
             } else {
@@ -182,7 +185,7 @@ static void i2c_task(void *arg)
             }
         }
 
-        vTaskDelay(pdMS_TO_TICKS(1000)); // Short delay between sensor reads to avoid bus congestion
+        vTaskDelay(pdMS_TO_TICKS(150)); // Short delay between sensor reads to avoid bus congestion
 
         /* ---- MS5611 ---- */
         ms5611_read_conversion(ms5611_dev_handle, MS5611_D1_OSR_4096);
@@ -200,7 +203,7 @@ static void i2c_task(void *arg)
             ESP_LOGW(TAG, "Failed to send I2C telemetry");
         }
 
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        vTaskDelay(pdMS_TO_TICKS(150));
     }
 }
 
@@ -241,7 +244,7 @@ static void ze27o3_task(void *arg)
         memset(&msg, 0, sizeof(msg));
         msg.source = TELEMETRY_SRC_ZE27O3;
 
-        esp_err_t err = ze27o3_readActiveUpload(&msg.data.ze27o3.o3_ppb);
+        esp_err_t err = ze27o3_readConcentration(&msg.data.ze27o3.o3_ppb);
         if (err == ESP_OK) {
             msg.data.ze27o3.valid = true;
             ESP_LOGI(TAG, "ZE27O3 O3: %u ppb", msg.data.ze27o3.o3_ppb);
@@ -275,6 +278,7 @@ static void telemetry_task(void *arg)
                     case TELEMETRY_SRC_I2C:
                         if (msg.data.i2c.sps30_valid) {
                             latest.sps30_pm25 = msg.data.i2c.sps30_pm25;
+                            latest.sps30_pm10 = msg.data.i2c.sps30_pm10;
                             latest.sps30_valid = true;
                         }
                         if (msg.data.i2c.ms5611_valid) {
@@ -313,9 +317,12 @@ static void telemetry_task(void *arg)
             snprintf(
                 telemetry_data,
                 sizeof(telemetry_data),
-                "PM2.5=%s%u, MS5611_Temp=%s%.2f, MS5611_Press=%s%.2f, MAX31856_Temp=%s%.2f, O3=%s%u\n",
+                "PM2.5=%s%.2f, PM10=%s%.2f, MS5611_Temp=%s%.2f, MS5611_Press=%s%.2f, MAX31856_Temp=%s%.2f, O3=%s%u\n",
                 copy.sps30_valid ? "" : "NA,",
                 copy.sps30_valid ? copy.sps30_pm25 : 0,
+                
+                copy.sps30_valid ? "" : "NA,",
+                copy.sps30_valid ? copy.sps30_pm10 : 0,
 
                 copy.ms5611_valid ? "" : "NA,",
                 copy.ms5611_valid ? (copy.ms5611_temperature / 100.0) : 0.0,
@@ -368,12 +375,14 @@ static void udp_telem_task(void *arg)
         /* Build JSON message */
         char msg[256];
         int len = snprintf(msg, sizeof(msg),
-            "\"pm25\":%u,"
+            "\"pm2.5\":%.2f,"
+            "\"pm10\":%.2f,"
             "\"ms_temp\":%.2f,"
             "\"ms_press\":%.2f,"
             "\"tc_temp\":%.2f,"
             "\"o3\":%u}",
             copy.sps30_valid ? copy.sps30_pm25 : 0,
+            copy.sps30_valid ? copy.sps30_pm10 : 0,
             copy.ms5611_valid ? copy.ms5611_temperature / 100.0 : 0.0,
             copy.ms5611_valid ? copy.ms5611_pressure / 100.0 : 0.0,
             copy.max31856_valid ? copy.max31856_temp : 0.0,

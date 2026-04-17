@@ -18,4 +18,4 @@ esp_err_t sps30_start(i2c_master_dev_handle_t dev_handle);
 
 esp_err_t sps30_ready(i2c_master_dev_handle_t dev_handle, bool *ready);
 
-esp_err_t sps30_read_pm25(i2c_master_dev_handle_t dev_handle, uint16_t *pm25);
+esp_err_t sps30_read_pm(i2c_master_dev_handle_t dev_handle, float *pm25, float *pm10);
