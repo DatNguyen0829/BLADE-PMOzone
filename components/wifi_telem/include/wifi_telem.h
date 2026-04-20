@@ -19,8 +19,8 @@
 #include "esp_err.h"
 
 /* ---------------- Configuration ---------------- */
-#define WIFI_SSID           "ICON"
-#define WIFI_PASS           "thebroncospace"
+#define WIFI_SSID           "iPhone"
+#define WIFI_PASS           "datdeptrai"
 
 #define GROUND_STATION_IP   "255.255.255.255"
 #define GROUND_STATION_PORT 5005

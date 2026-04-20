@@ -86,6 +86,7 @@ static void max31856_task(void *arg);
 static void ze27o3_task(void *arg);
 static void telemetry_task(void *arg);
 static void udp_telem_task(void *arg);
+static void heat_control_task(void *arg);
 
 void app_main(void)
 {   
@@ -160,13 +161,15 @@ void app_main(void)
     /* ---------- TURN ON HEATING PAD ----- */
     gpio_reset_pin(HEAT_GATE);
     gpio_set_direction(HEAT_GATE, GPIO_MODE_OUTPUT);
-    gpio_set_level(HEAT_GATE, 1);
+    // gpio_set_level(HEAT_GATE, 1);
+
     /* ---------- Create Tasks ---------- */
     xTaskCreate(i2c_task, "i2c_task", 4096, NULL, 5, NULL);
     xTaskCreate(max31856_task, "max31856_task", 4096, NULL, 5, NULL);
     xTaskCreate(ze27o3_task, "ze27o3_task", 4096, NULL, 5, NULL);
     xTaskCreate(udp_telem_task, "udp_telem_task", 4096, NULL, 5, NULL);
     xTaskCreate(telemetry_task, "telemetry_task", 4096, NULL, 10, NULL);
+    xTaskCreate(heat_control_task, "heat_control_task", 2048, NULL, 5, NULL);
 }
 
 /* -------------------- I2C Task -------------------- */
@@ -272,7 +275,7 @@ static void telemetry_task(void *arg)
     telemetry_snapshot_t copy = {0};
 
     TickType_t last_log_time = xTaskGetTickCount();
-    const TickType_t log_period = pdMS_TO_TICKS(250);
+    const TickType_t log_period = pdMS_TO_TICKS(1000);
 
     while (1) {
         /* Wait up to 1 second for new data */
@@ -416,6 +419,26 @@ static void udp_telem_task(void *arg)
             ESP_LOGW(TAG, "Wi-Fi not connected, skipping send");
         }
 
-        vTaskDelay(pdMS_TO_TICKS(250));  // send every 0.25 second
+        vTaskDelay(pdMS_TO_TICKS(1000));  // send every 0.25 second
     }
+}
+
+static void heat_control_task(void *arg)
+{
+    const TickType_t total_time = pdMS_TO_TICKS(4 * 60 * 60 * 1000); // 4 hours
+    const TickType_t on_time = total_time * 70 / 100;
+
+    // Turn ON
+    gpio_set_level(HEAT_GATE, 1);
+    ESP_LOGI(TAG, "Heating pad ON");
+
+    // Stay ON for 70%
+    vTaskDelay(on_time);
+
+    // Turn OFF
+    gpio_set_level(HEAT_GATE, 0);
+    ESP_LOGI(TAG, "Heating pad OFF");
+
+    // Optionally stop task
+    vTaskDelete(NULL);
 }
