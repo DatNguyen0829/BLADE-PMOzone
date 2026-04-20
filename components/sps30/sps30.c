@@ -23,8 +23,8 @@ uint8_t SPS30_CalcCrc(const uint8_t data[2])
 
 esp_err_t sps30_start(i2c_master_dev_handle_t dev_handle)
 {
-    uint8_t crc = SPS30_CalcCrc((uint8_t[]){0x05, 0x00});   // integer format
-    uint8_t cmd[] = {0x00, 0x10, 0x05, 0x00, crc};    // pointer 0x0010 + payload
+    uint8_t crc = SPS30_CalcCrc((uint8_t[]){0x03, 0x00});   // integer format
+    uint8_t cmd[] = {0x00, 0x10, 0x03, 0x00, crc};    // pointer 0x0010 + payload
     return i2c_master_transmit(dev_handle, cmd, sizeof(cmd), -1);
 }
 
@@ -60,10 +60,10 @@ esp_err_t sps30_ready(i2c_master_dev_handle_t dev_handle, bool *ready)
     return ESP_OK;
 }
 
-esp_err_t sps30_read_pm25(i2c_master_dev_handle_t dev_handle, uint16_t *pm25)
+esp_err_t sps30_read_pm(i2c_master_dev_handle_t dev_handle, float *pm25, float *pm10)
 {
     uint8_t cmd[] = {0x03, 0x00};
-    uint8_t rx[30] = {0};
+    uint8_t rx[60] = {0};
 
     esp_err_t err = i2c_master_transmit(dev_handle, cmd, sizeof(cmd), -1);
     if (err != ESP_OK) {
@@ -79,8 +79,8 @@ esp_err_t sps30_read_pm25(i2c_master_dev_handle_t dev_handle, uint16_t *pm25)
         return err;
     }
 
-    // Check all CRC triplets
-    for (int i = 0; i < 30; i += 3) {
+    // // Check all CRC triplets
+    for (int i = 0; i < 60; i += 3) {
         uint8_t crc = SPS30_CalcCrc((uint8_t[]){rx[i], rx[i + 1]});
         if (crc != rx[i + 2]) {
             ESP_LOGE(TAG,
@@ -90,13 +90,17 @@ esp_err_t sps30_read_pm25(i2c_master_dev_handle_t dev_handle, uint16_t *pm25)
         }
     }
 
-    // Integer output mode:
-    // PM1.0  = bytes 0,1,2
-    // PM2.5  = bytes 3,4,5
-    *pm25 = ((uint16_t)rx[3] << 8) | rx[4];
+    uint32_t pm25Raw =  ((uint32_t)rx[6]  << 24) |
+                        ((uint32_t)rx[7]  << 16) |
+                        ((uint32_t)rx[9]  << 8)  |
+                        ((uint32_t)rx[10]);
 
-    ESP_LOGI(TAG, "PM raw bytes: %02X %02X %02X %02X %02X %02X",
-             rx[0], rx[1], rx[2], rx[3], rx[4], rx[5]);
+    uint32_t pm10Raw =  ((uint32_t)rx[48]  << 24) |
+                        ((uint32_t)rx[49]  << 16) |
+                        ((uint32_t)rx[51]  << 8)  |
+                        ((uint32_t)rx[52]);        
 
+    memcpy(pm25, &pm25Raw, sizeof(pm25Raw));
+    memcpy(pm10, &pm10Raw, sizeof(pm10Raw));
     return ESP_OK;
 }

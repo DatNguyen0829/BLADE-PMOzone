@@ -40,7 +40,8 @@ typedef struct {
     telemetry_source_t source;
     union {
         struct {
-            uint16_t sps30_pm25;
+            float sps30_pm25;
+            float sps30_pm10;
             int32_t ms5611_temperature; 
             int32_t ms5611_pressure;    
             bool sps30_valid;
@@ -61,7 +62,8 @@ typedef struct {
 
 /* Latest full snapshot used by telemetry_task */
 typedef struct {
-    uint16_t sps30_pm25;
+    float sps30_pm25;
+    float sps30_pm10;
     int32_t ms5611_temperature;
     int32_t ms5611_pressure;
     float max31856_temp;
@@ -159,7 +161,7 @@ static void i2c_task(void *arg)
         bool sps30_ready_flag = false;
         esp_err_t err = sps30_ready(sps30_dev_handle, &sps30_ready_flag);
         if (err == ESP_OK && sps30_ready_flag) {
-            err = sps30_read_pm25(sps30_dev_handle, &msg.data.i2c.sps30_pm25);
+            err = sps30_read_pm(sps30_dev_handle, &msg.data.i2c.sps30_pm25, &msg.data.i2c.sps30_pm10);
             if (err == ESP_OK) {
                 msg.data.i2c.sps30_valid = true;
             } else {
@@ -259,6 +261,7 @@ static void telemetry_task(void *arg)
                 case TELEMETRY_SRC_I2C:
                     if (msg.data.i2c.sps30_valid) {
                         latest.sps30_pm25 = msg.data.i2c.sps30_pm25;
+                        latest.sps30_pm10 = msg.data.i2c.sps30_pm10;
                         latest.sps30_valid = true;
                     }
                     if (msg.data.i2c.ms5611_valid) {
@@ -291,12 +294,22 @@ static void telemetry_task(void *arg)
         if ((xTaskGetTickCount() - last_log_time) >= log_period) {
             char telemetry_data[256];
 
+            // Get time 
+            uint32_t ms = pdTICKS_TO_MS(xTaskGetTickCount());
+            float seconds = ms / 1000.0f;
+
             snprintf(
                 telemetry_data,
                 sizeof(telemetry_data),
-                "PM2.5=%s%u, MS5611_Temp=%s%.2f, MS5611_Press=%s%.2f, MAX31856_Temp=%s%.2f, O3=%s%u\n",
+                "T,%.3f,PM2.5,%s%.2f,PM10,%s%.2f,MS_Temp,%s%.2f,MS_P,%s%.2f,MAX_T,%s%.2f,O3,%s%u\n",
+
+                seconds,
+
                 latest.sps30_valid ? "" : "NA,",
                 latest.sps30_valid ? latest.sps30_pm25 : 0,
+
+                latest.sps30_valid ? "" : "NA,",
+                latest.sps30_pm10 ? latest.sps30_pm10 : 0,
 
                 latest.ms5611_valid ? "" : "NA,",
                 latest.ms5611_valid ? (latest.ms5611_temperature / 100.0) : 0.0,
