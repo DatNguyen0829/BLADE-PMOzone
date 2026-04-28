@@ -19,7 +19,8 @@
 #include "max31856.h"
 #include "wifi_telem.h"
 
-#define HEAT_GATE 26
+#define HEAT_GATE 26 // GPIO to turn on heating pad
+
 /* -------------------- Handles -------------------- */
 i2c_master_bus_handle_t i2c_bus_handle;
 i2c_master_dev_handle_t sps30_dev_handle;
@@ -27,8 +28,8 @@ i2c_master_dev_handle_t ms5611_dev_handle;
 spi_device_handle_t max31856_spi_handle;
 static SemaphoreHandle_t spi_mutex; // SPI_MUTEX
 static SemaphoreHandle_t telem_mutex; // TELEMETRY_MUTEX
-
-static QueueHandle_t telemetry_queue;
+static QueueHandle_t telemetry_queue; // Queue for each task to send to telemetry_task
+static bool heat_on = false; // Shows the state of the heating pad
 
 static const char *TAG = "APP";
 
@@ -40,7 +41,7 @@ typedef enum {
 } telemetry_source_t;
 
 typedef struct {
-    telemetry_source_t source;
+    telemetry_source_t source; // ID to know which task the queue got it from
     union {
         struct {
             float sps30_pm25;
@@ -76,17 +77,19 @@ typedef struct {
     bool ms5611_valid;
     bool max31856_valid;
     bool ze27o3_valid;
+    bool heat_state;
 } telemetry_snapshot_t;
 
 static telemetry_snapshot_t latest = {0}; //Records the latest valid values for each sensor, updated by telemetry_task
 
-/* -------------------- Task Prototypes -------------------- */
+/* -------------------- Task and Function Prototypes -------------------- */
 static void i2c_task(void *arg);
 static void max31856_task(void *arg);
 static void ze27o3_task(void *arg);
 static void telemetry_task(void *arg);
 static void udp_telem_task(void *arg);
-static void heat_control_task(void *arg);
+void heat_control(float t1, float t2);
+void blv_config();
 
 void app_main(void)
 {   
@@ -157,11 +160,14 @@ void app_main(void)
 
     /* ---------- Initialize WIFI  ------- */
     ESP_ERROR_CHECK(wifi_telem_init());
+
+    /* ---------- Initialize UART1 CONFIG FOR BLV  ------- */
+    blv_config();
     
-    /* ---------- TURN ON HEATING PAD ----- */
+    /* ---------- Initialize HEATING PAD ----- */
     gpio_reset_pin(HEAT_GATE);
     gpio_set_direction(HEAT_GATE, GPIO_MODE_OUTPUT);
-    // gpio_set_level(HEAT_GATE, 1);
+    gpio_set_level(HEAT_GATE, 0);
 
     /* ---------- Create Tasks ---------- */
     xTaskCreate(i2c_task, "i2c_task", 4096, NULL, 5, NULL);
@@ -169,7 +175,6 @@ void app_main(void)
     xTaskCreate(ze27o3_task, "ze27o3_task", 4096, NULL, 5, NULL);
     xTaskCreate(udp_telem_task, "udp_telem_task", 4096, NULL, 5, NULL);
     xTaskCreate(telemetry_task, "telemetry_task", 4096, NULL, 10, NULL);
-    xTaskCreate(heat_control_task, "heat_control_task", 2048, NULL, 5, NULL);
 }
 
 /* -------------------- I2C Task -------------------- */
@@ -313,6 +318,12 @@ static void telemetry_task(void *arg)
                     default:
                         break;
                 }
+
+                if (latest.ms5611_valid && latest.max31856_valid) {
+                    heat_control(latest.ms5611_temperature / 100.0, latest.max31856_temp); // Determine whether or not to determine heating pad
+                }
+                latest.heat_state = heat_on;
+                
                 copy = latest; // Make a copy for logging to minimize time holding mutex
                 xSemaphoreGive(telem_mutex); // Release mutex after updating latest snapshot
             }
@@ -329,7 +340,7 @@ static void telemetry_task(void *arg)
             snprintf(
                 telemetry_data,
                 sizeof(telemetry_data),
-                "T,%.3f,PM2.5,%s%.2f,PM10,%s%.2f,MS_Temp,%s%.2f,MS_P,%s%.2f,MAX_T,%s%.2f,O3,%s%u\n",
+                "T,%.3f,PM2.5,%s%.2f,PM10,%s%.2f,MS_Temp,%s%.2f,MS_P,%s%.2f,MAX_T,%s%.2f,O3,%s%u,HEAT,%u\n",
                 seconds,
                 
                 copy.sps30_valid ? "" : "NA,",
@@ -348,11 +359,14 @@ static void telemetry_task(void *arg)
                 copy.max31856_valid ? copy.max31856_temp : 0.0,
 
                 copy.ze27o3_valid ? "" : "NA,",
-                copy.ze27o3_valid ? copy.ze27o3_o3_ppb : 0
+                copy.ze27o3_valid ? copy.ze27o3_o3_ppb : 0,
+
+                copy.heat_state ? 1 : 0
             );
 
             if (xSemaphoreTake(spi_mutex, pdMS_TO_TICKS(500)) == pdTRUE) {
                 esp_err_t err = sd_write(telemetry_data);
+                uart_write_bytes(UART_NUM_1, telemetry_data, strlen(telemetry_data));
                 xSemaphoreGive(spi_mutex);
 
                 if (err != ESP_OK) {
@@ -372,13 +386,12 @@ static void telemetry_task(void *arg)
 
 static void udp_telem_task(void *arg)
 {
-    // Placeholder for future implementation of UDP telemetry transmission
     while (1) {
         telemetry_snapshot_t copy = {0};
 
         /* Get latest telemetry safely */
         if (xSemaphoreTake(telem_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-            copy = latest;
+            copy = latest; // Copies the latest snapshot of telemetry
             xSemaphoreGive(telem_mutex);
         } else {
             ESP_LOGW(TAG, "Failed to lock telemetry mutex");
@@ -389,18 +402,20 @@ static void udp_telem_task(void *arg)
         /* Build JSON message */
         char msg[256];
         int len = snprintf(msg, sizeof(msg),
-            "\"pm2.5\":%.2f,"
+            "{\"pm2.5\":%.2f,"
             "\"pm10\":%.2f,"
             "\"ms_temp\":%.2f,"
             "\"ms_press\":%.2f,"
             "\"tc_temp\":%.2f,"
-            "\"o3\":%u}",
+            "\"o3\":%u,"
+            "\"heat\":%u}",
             copy.sps30_valid ? copy.sps30_pm25 : 0,
             copy.sps30_valid ? copy.sps30_pm10 : 0,
             copy.ms5611_valid ? copy.ms5611_temperature / 100.0 : 0.0,
             copy.ms5611_valid ? copy.ms5611_pressure / 100.0 : 0.0,
             copy.max31856_valid ? copy.max31856_temp : 0.0,
-            copy.ze27o3_valid ? copy.ze27o3_o3_ppb : 0
+            copy.ze27o3_valid ? copy.ze27o3_o3_ppb : 0,
+            copy.heat_state ? 1 : 0
         );
 
         if (len <= 0) {
@@ -423,22 +438,40 @@ static void udp_telem_task(void *arg)
     }
 }
 
-static void heat_control_task(void *arg)
+void heat_control(float t1, float t2)
 {
-    const TickType_t total_time = pdMS_TO_TICKS(4 * 60 * 60 * 1000); // 4 hours
-    const TickType_t on_time = total_time * 70 / 100;
+    const float TARGET_C = 15.0f;
+    const float HYST_C = 0.5f;
 
-    // Turn ON
-    gpio_set_level(HEAT_GATE, 1);
-    ESP_LOGI(TAG, "Heating pad ON");
+    const float low_thr  = TARGET_C - HYST_C;   // 14.5 C
+    const float high_thr = TARGET_C + HYST_C;   // 15.5 C
 
-    // Stay ON for 70%
-    vTaskDelay(on_time);
+    /* Turn ON if currently OFF and either layer is too cold */
+    if (!heat_on && (t1 < low_thr || t2 < low_thr)) {
+        gpio_set_level(HEAT_GATE, 1);
+        heat_on = true;
+        ESP_LOGI(TAG, "Heater ON");
+    }
+    /* Turn OFF if currently ON and both layers are warm enough */
+    else if (heat_on && (t1 > high_thr && t2 > high_thr)) {
+        gpio_set_level(HEAT_GATE, 0);
+        heat_on = false;
+        ESP_LOGI(TAG, "Heater OFF");
+    }
+}
 
-    // Turn OFF
-    gpio_set_level(HEAT_GATE, 0);
-    ESP_LOGI(TAG, "Heating pad OFF");
+void blv_config(){
 
-    // Optionally stop task
-    vTaskDelete(NULL);
+    uart_config_t uart1_confg = {
+        .baud_rate = 9600,
+        .data_bits = UART_DATA_8_BITS,
+        .parity = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+        .source_clk = UART_SCLK_DEFAULT,
+    };
+
+    ESP_ERROR_CHECK(uart_driver_install(UART_NUM_1, 256, 0, 0, NULL, 0));
+    ESP_ERROR_CHECK(uart_param_config(UART_NUM_1, &uart1_confg));
+    ESP_ERROR_CHECK(uart_set_pin(UART_NUM_1, 22, 21, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
 }
