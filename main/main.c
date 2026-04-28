@@ -18,8 +18,7 @@
 #include "sd.h"
 #include "max31856.h"
 #include "wifi_telem.h"
-
-#define HEAT_GATE 26 // GPIO to turn on heating pad
+#include "heater.h"
 
 /* -------------------- Handles -------------------- */
 i2c_master_bus_handle_t i2c_bus_handle;
@@ -29,7 +28,7 @@ spi_device_handle_t max31856_spi_handle;
 static SemaphoreHandle_t spi_mutex; // SPI_MUTEX
 static SemaphoreHandle_t telem_mutex; // TELEMETRY_MUTEX
 static QueueHandle_t telemetry_queue; // Queue for each task to send to telemetry_task
-static bool heat_on = false; // Shows the state of the heating pad
+static bool heat_on = false;
 
 static const char *TAG = "APP";
 
@@ -77,7 +76,7 @@ typedef struct {
     bool ms5611_valid;
     bool max31856_valid;
     bool ze27o3_valid;
-    bool heat_state;
+    uint8_t heat_state;
 } telemetry_snapshot_t;
 
 static telemetry_snapshot_t latest = {0}; //Records the latest valid values for each sensor, updated by telemetry_task
@@ -88,7 +87,7 @@ static void max31856_task(void *arg);
 static void ze27o3_task(void *arg);
 static void telemetry_task(void *arg);
 static void udp_telem_task(void *arg);
-void heat_control(float t1, float t2);
+uint8_t heat_control(float t1, float t2);
 void blv_config();
 
 void app_main(void)
@@ -165,9 +164,7 @@ void app_main(void)
     blv_config();
     
     /* ---------- Initialize HEATING PAD ----- */
-    gpio_reset_pin(HEAT_GATE);
-    gpio_set_direction(HEAT_GATE, GPIO_MODE_OUTPUT);
-    gpio_set_level(HEAT_GATE, 0);
+    heat_pwm_init();
 
     /* ---------- Create Tasks ---------- */
     xTaskCreate(i2c_task, "i2c_task", 4096, NULL, 5, NULL);
@@ -245,7 +242,7 @@ static void max31856_task(void *arg)
             ESP_LOGW(TAG, "SPI mutex timeout in max31856_task");
         }
 
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        vTaskDelay(pdMS_TO_TICKS(250));
     }
 }
 /* -------------------- ZE27O3 Task -------------------- */
@@ -269,7 +266,7 @@ static void ze27o3_task(void *arg)
             ESP_LOGW(TAG, "Failed to read ZE27O3: %s", esp_err_to_name(err));
         }
 
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        vTaskDelay(pdMS_TO_TICKS(750));
     }
 }
 
@@ -320,10 +317,8 @@ static void telemetry_task(void *arg)
                 }
 
                 if (latest.ms5611_valid && latest.max31856_valid) {
-                    heat_control(latest.ms5611_temperature / 100.0, latest.max31856_temp); // Determine whether or not to determine heating pad
-                }
-                latest.heat_state = heat_on;
-                
+                    latest.heat_state = heat_control(latest.ms5611_temperature / 100.0, latest.max31856_temp); // Determine whether or not to determine heating pad
+                }                
                 copy = latest; // Make a copy for logging to minimize time holding mutex
                 xSemaphoreGive(telem_mutex); // Release mutex after updating latest snapshot
             }
@@ -361,7 +356,7 @@ static void telemetry_task(void *arg)
                 copy.ze27o3_valid ? "" : "NA,",
                 copy.ze27o3_valid ? copy.ze27o3_o3_ppb : 0,
 
-                copy.heat_state ? 1 : 0
+                copy.heat_state
             );
 
             if (xSemaphoreTake(spi_mutex, pdMS_TO_TICKS(500)) == pdTRUE) {
@@ -415,7 +410,7 @@ static void udp_telem_task(void *arg)
             copy.ms5611_valid ? copy.ms5611_pressure / 100.0 : 0.0,
             copy.max31856_valid ? copy.max31856_temp : 0.0,
             copy.ze27o3_valid ? copy.ze27o3_o3_ppb : 0,
-            copy.heat_state ? 1 : 0
+            copy.heat_state 
         );
 
         if (len <= 0) {
@@ -438,26 +433,53 @@ static void udp_telem_task(void *arg)
     }
 }
 
-void heat_control(float t1, float t2)
+uint8_t heat_control(float t1, float t2)
 {
     const float TARGET_C = 15.0f;
-    const float HYST_C = 0.5f;
+    const float HYST_C   = 0.5f;
 
     const float low_thr  = TARGET_C - HYST_C;   // 14.5 C
     const float high_thr = TARGET_C + HYST_C;   // 15.5 C
 
-    /* Turn ON if currently OFF and either layer is too cold */
+    float colder_temp = (t1 < t2) ? t1 : t2;
+    float error = TARGET_C - colder_temp;
+
+    uint8_t duty_percent = 0;
+
+    /* Hysteresis enable / disable */
     if (!heat_on && (t1 < low_thr || t2 < low_thr)) {
-        gpio_set_level(HEAT_GATE, 1);
         heat_on = true;
-        ESP_LOGI(TAG, "Heater ON");
+        ESP_LOGI(TAG, "Heater ENABLED");
     }
-    /* Turn OFF if currently ON and both layers are warm enough */
     else if (heat_on && (t1 > high_thr && t2 > high_thr)) {
-        gpio_set_level(HEAT_GATE, 0);
         heat_on = false;
-        ESP_LOGI(TAG, "Heater OFF");
+        ESP_LOGI(TAG, "Heater DISABLED");
     }
+
+    /* Dynamic duty only while enabled */
+    if (heat_on) {
+        if (error >= 5.0f) {
+            duty_percent = 100;
+        } else if (error >= 3.0f) {
+            duty_percent = 70;
+        } else if (error >= 2.0f) {
+            duty_percent = 50;
+        } else if (error >= 1.0f) {
+            duty_percent = 30;
+        } else if (error > 0.0f) {
+            duty_percent = 10;
+        } else {
+            duty_percent = 5;
+        }
+    } else {
+        duty_percent = 0;
+    }
+
+    heat_set_duty_percent(duty_percent);
+    ESP_LOGI(TAG, "Heat ctrl: t1=%.2f C, t2=%.2f C, duty=%d%%, enabled=%d",
+             t1, t2, duty_percent, heat_on);
+
+    return duty_percent;
 }
 
 void blv_config(){
