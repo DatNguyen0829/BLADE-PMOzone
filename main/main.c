@@ -87,7 +87,7 @@ static void max31856_task(void *arg);
 static void ze27o3_task(void *arg);
 static void telemetry_task(void *arg);
 static void udp_telem_task(void *arg);
-uint8_t heat_control(float t1, float t2);
+uint8_t heat_control(float t);
 void blv_config();
 
 void app_main(void)
@@ -316,8 +316,8 @@ static void telemetry_task(void *arg)
                         break;
                 }
 
-                if (latest.ms5611_valid && latest.max31856_valid) {
-                    latest.heat_state = heat_control(latest.ms5611_temperature / 100.0, latest.max31856_temp); // Determine whether or not to determine heating pad
+                if (latest.max31856_valid) {
+                    latest.heat_state = heat_control(latest.max31856_temp); // Determine whether or not to determine heating pad
                 }                
                 copy = latest; // Make a copy for logging to minimize time holding mutex
                 xSemaphoreGive(telem_mutex); // Release mutex after updating latest snapshot
@@ -327,11 +327,13 @@ static void telemetry_task(void *arg)
         /* Log once per second using latest values */
         if ((xTaskGetTickCount() - last_log_time) >= log_period) {
             char telemetry_data[256];
+            char blv_data[64];
 
             // Get time 
             uint32_t ms = pdTICKS_TO_MS(xTaskGetTickCount());
             float seconds = ms / 1000.0f;
 
+            // Format sd card log data
             snprintf(
                 telemetry_data,
                 sizeof(telemetry_data),
@@ -359,9 +361,26 @@ static void telemetry_task(void *arg)
                 copy.heat_state
             );
 
+            // Format BLV log data
+            snprintf(
+                blv_data, 
+                sizeof(blv_data), 
+                "PM25,%.2f,PM10,%.2f,O3,%u,P,%.2f,T,%.2f\n",
+
+                copy.sps30_valid ? copy.sps30_pm25 : 0,
+
+                copy.sps30_valid ? copy.sps30_pm10 : 0,
+
+                copy.ze27o3_valid ? copy.ze27o3_o3_ppb : 0,
+
+                copy.ms5611_valid ? (copy.ms5611_pressure / 100.0) : 0.0,
+
+                copy.ms5611_valid ? (copy.ms5611_temperature / 100.0) : 0.0
+            );
+
             if (xSemaphoreTake(spi_mutex, pdMS_TO_TICKS(500)) == pdTRUE) {
                 esp_err_t err = sd_write(telemetry_data);
-                uart_write_bytes(UART_NUM_1, telemetry_data, strlen(telemetry_data));
+                uart_write_bytes(UART_NUM_1, blv_data, strlen(blv_data));
                 xSemaphoreGive(spi_mutex);
 
                 if (err != ESP_OK) {
@@ -433,51 +452,52 @@ static void udp_telem_task(void *arg)
     }
 }
 
-uint8_t heat_control(float t1, float t2)
+uint8_t heat_control(float t)
 {
-    const float TARGET_C = 15.0f;
-    const float HYST_C   = 0.5f;
+    const float TARGET_C = 17.5f;   
+    const float HYST_C   = 0.25f;
 
-    const float low_thr  = TARGET_C - HYST_C;   // 14.5 C
-    const float high_thr = TARGET_C + HYST_C;   // 15.5 C
+    const float low_thr  = TARGET_C - HYST_C;   // 12.25 C
+    const float high_thr = TARGET_C + HYST_C;   // 12.75 C
 
-    float colder_temp = (t1 < t2) ? t1 : t2;
-    float error = TARGET_C - colder_temp;
+    // float colder_temp = (t1 < t2) ? t1 : t2;
+    float error = TARGET_C - t;
 
     uint8_t duty_percent = 0;
 
     /* Hysteresis enable / disable */
-    if (!heat_on && (t1 < low_thr || t2 < low_thr)) {
+    if (!heat_on && (t < low_thr)) {
         heat_on = true;
         ESP_LOGI(TAG, "Heater ENABLED");
     }
-    else if (heat_on && (t1 > high_thr && t2 > high_thr)) {
+    else if (heat_on && (t > high_thr)) {
         heat_on = false;
         ESP_LOGI(TAG, "Heater DISABLED");
     }
 
+    // Hello
     /* Dynamic duty only while enabled */
     if (heat_on) {
         if (error >= 5.0f) {
-            duty_percent = 100;
-        } else if (error >= 3.0f) {
             duty_percent = 70;
+        } else if (error >= 3.0f) {
+            duty_percent = 65;
         } else if (error >= 2.0f) {
-            duty_percent = 50;
+            duty_percent = 60;
         } else if (error >= 1.0f) {
-            duty_percent = 30;
+            duty_percent = 50;
         } else if (error > 0.0f) {
-            duty_percent = 10;
+            duty_percent = 40;
         } else {
-            duty_percent = 5;
+            duty_percent = 30;
         }
     } else {
         duty_percent = 0;
     }
 
     heat_set_duty_percent(duty_percent);
-    ESP_LOGI(TAG, "Heat ctrl: t1=%.2f C, t2=%.2f C, duty=%d%%, enabled=%d",
-             t1, t2, duty_percent, heat_on);
+    // ESP_LOGI(TAG, "Heat ctrl: t1=%.2f C, t2=%.2f C, duty=%d%%, enabled=%d",
+    //          t1, t2, duty_percent, heat_on);
 
     return duty_percent;
 }

@@ -47,7 +47,7 @@ esp_err_t sps30_ready(i2c_master_dev_handle_t dev_handle, bool *ready)
         return err;
     }
 
-    ESP_LOGI(TAG, "ready raw = %02X %02X %02X", rx[0], rx[1], rx[2]);
+    //ESP_LOGI(TAG, "ready raw = %02X %02X %02X", rx[0], rx[1], rx[2]);
 
     uint8_t crc = SPS30_CalcCrc((uint8_t[]){rx[0], rx[1]});
     if (crc != rx[2]) {

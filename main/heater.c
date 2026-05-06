@@ -22,7 +22,7 @@ void heat_pwm_init(void){
     ESP_ERROR_CHECK(ledc_channel_config(&chan_cfg));
 }
 
-void heat_set_duty_percent(int duty_percent){
+void heat_set_duty_percent(uint8_t duty_percent){
     if (duty_percent < 0) duty_percent = 0;
     if (duty_percent > 100) duty_percent = 100;
 

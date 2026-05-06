@@ -40,7 +40,7 @@ esp_err_t max31856_write_register(spi_device_handle_t *spi_device, uint8_t reg_a
         return ESP_FAIL;
     }
 
-    ESP_LOGI(SPI_TAG, "Wrote 0x%02X to reg 0x%02X", data, reg_addr);
+    //ESP_LOGI(SPI_TAG, "Wrote 0x%02X to reg 0x%02X", data, reg_addr);
     return ESP_OK;
 }
 
@@ -61,7 +61,7 @@ uint8_t max31856_read_register(spi_device_handle_t *spi_device, uint8_t reg){
         return 0;
     }
 
-    ESP_LOGI(SPI_TAG, "Read reg 0x%02X = 0x%02X", reg, rx_data[1]);
+    //ESP_LOGI(SPI_TAG, "Read reg 0x%02X = 0x%02X", reg, rx_data[1]);
     return rx_data[1];
 }
 
@@ -144,9 +144,9 @@ float max31856_read_thermocouple_temp(spi_device_handle_t *spi_device){
 
     float temp_c = raw * 0.0078125f;
 
-    ESP_LOGI(SPI_TAG,
-             "LTCBH=0x%02X LTCBM=0x%02X LTCBL=0x%02X raw=%ld temp=%.2f C",
-             ltcbh, ltcbm, ltcbL, (long)raw, temp_c);
+    // ESP_LOGI(SPI_TAG,
+    //          "LTCBH=0x%02X LTCBM=0x%02X LTCBL=0x%02X raw=%ld temp=%.2f C",
+    //          ltcbh, ltcbm, ltcbL, (long)raw, temp_c);
 
     return temp_c;
 

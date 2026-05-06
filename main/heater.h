@@ -10,4 +10,4 @@
 
 
 void heat_pwm_init(void);
-void heat_set_duty_percent(int duty_percent);
+void heat_set_duty_percent(uint8_t duty_percent);
